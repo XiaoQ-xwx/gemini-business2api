@@ -41,7 +41,7 @@
                   class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
                   placeholder="自动检测或手动填写"
                 />
-                <label class="block text-xs text-muted-foreground">代理地址</label>
+                <label class="block text-xs text-muted-foreground">（旧）全局代理地址</label>
                 <input
                   v-model="localSettings.basic.proxy"
                   type="text"
@@ -52,12 +52,87 @@
             </div>
 
             <div class="rounded-2xl border border-border bg-card p-4">
+              <p class="text-xs uppercase tracking-[0.3em] text-muted-foreground">出站代理（全局）</p>
+              <div class="mt-4 space-y-3">
+                <Checkbox v-model="localSettings.basic.outbound_proxy.enabled">
+                  启用出站代理
+                </Checkbox>
+                <div class="grid grid-cols-2 gap-3">
+                  <div class="space-y-2">
+                    <label class="block text-xs text-muted-foreground">协议</label>
+                    <SelectMenu
+                      v-model="localSettings.basic.outbound_proxy.protocol"
+                      :options="outboundProxyProtocolOptions"
+                      class="w-full"
+                    />
+                  </div>
+                  <div class="space-y-2">
+                    <label class="block text-xs text-muted-foreground">端口</label>
+                    <input
+                      v-model.number="localSettings.basic.outbound_proxy.port"
+                      type="number"
+                      min="0"
+                      max="65535"
+                      class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
+                      placeholder="7890"
+                    />
+                  </div>
+                </div>
+                <label class="block text-xs text-muted-foreground">主机</label>
+                <input
+                  v-model="localSettings.basic.outbound_proxy.host"
+                  type="text"
+                  class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
+                  placeholder="127.0.0.1"
+                />
+                <div class="grid grid-cols-2 gap-3">
+                  <div class="space-y-2">
+                    <label class="block text-xs text-muted-foreground">用户名（可选）</label>
+                    <input
+                      v-model="localSettings.basic.outbound_proxy.username"
+                      type="text"
+                      class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
+                      placeholder="user"
+                    />
+                  </div>
+                  <div class="space-y-2">
+                    <label class="block text-xs text-muted-foreground">密码（可选）</label>
+                    <input
+                      v-model="localSettings.basic.outbound_proxy.password"
+                      type="text"
+                      class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
+                      placeholder="pass"
+                    />
+                  </div>
+                </div>
+                <div class="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                  <span>NO_PROXY（直连白名单）</span>
+                  <HelpTip text="逗号分隔：localhost,127.0.0.1,.example.com,10.0.0.0/8" />
+                </div>
+                <input
+                  v-model="localSettings.basic.outbound_proxy.no_proxy"
+                  type="text"
+                  class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
+                  placeholder="localhost,127.0.0.1"
+                />
+                <Checkbox v-model="localSettings.basic.outbound_proxy.direct_fallback">
+                  代理失败自动直连重试一次
+                </Checkbox>
+              </div>
+            </div>
+
+            <div class="rounded-2xl border border-border bg-card p-4">
               <p class="text-xs uppercase tracking-[0.3em] text-muted-foreground">自动注册/刷新</p>
               <div class="mt-4 space-y-3">
                 <div class="grid grid-cols-2 items-center gap-x-6 gap-y-2">
-                  <Checkbox v-model="localSettings.basic.duckmail_verify_ssl">
-                    DuckMail SSL 校验
-                  </Checkbox>
+                  <div class="space-y-2">
+                    <Checkbox v-model="localSettings.basic.duckmail_verify_ssl">
+                      DuckMail SSL 校验
+                    </Checkbox>
+                    <Checkbox v-model="localSettings.basic.gptmail_verify_ssl">
+                      GPTMail SSL 校验
+                    </Checkbox>
+                  </div>
                   <div class="flex items-center justify-end gap-2">
                     <Checkbox v-model="localSettings.basic.browser_headless">
                       无头浏览器
@@ -80,6 +155,13 @@
                   type="text"
                   class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
                   placeholder="https://api.duckmail.sbs"
+                />
+                <label class="block text-xs text-muted-foreground">GPTMail API</label>
+                <input
+                  v-model="localSettings.basic.gptmail_base_url"
+                  type="text"
+                  class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
+                  placeholder="https://mail.chatgpt.org.uk"
                 />
                 <div class="flex items-center justify-between gap-2 text-xs text-muted-foreground">
                   <span>过期刷新窗口（小时）</span>
@@ -112,6 +194,13 @@
                   type="text"
                   class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
                   placeholder="dk_xxx"
+                />
+                <label class="block text-xs text-muted-foreground">GPTMail API 密钥</label>
+                <input
+                  v-model="localSettings.basic.gptmail_api_key"
+                  type="text"
+                  class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
+                  placeholder="gpt-test"
                 />
               </div>
             </div>
@@ -259,6 +348,12 @@ const imageOutputOptions = [
   { label: 'Base64 编码', value: 'base64' },
   { label: 'URL 链接', value: 'url' },
 ]
+const outboundProxyProtocolOptions = [
+  { label: 'HTTP', value: 'http' },
+  { label: 'HTTPS', value: 'https' },
+  { label: 'SOCKS5', value: 'socks5' },
+  { label: 'SOCKS5H（DNS 走代理）', value: 'socks5h' },
+]
 const imageModelOptions = computed(() => {
   const baseOptions = [
     { label: 'Gemini 3 Pro Preview', value: 'gemini-3-pro-preview' },
@@ -286,6 +381,8 @@ watch(settings, (value) => {
   next.basic = next.basic || {}
   next.basic.duckmail_base_url ||= 'https://api.duckmail.sbs'
   next.basic.duckmail_verify_ssl = next.basic.duckmail_verify_ssl ?? true
+  next.basic.gptmail_base_url ||= 'https://mail.chatgpt.org.uk'
+  next.basic.gptmail_verify_ssl = next.basic.gptmail_verify_ssl ?? true
   next.basic.browser_engine = next.basic.browser_engine || 'dp'
   next.basic.browser_headless = next.basic.browser_headless ?? false
   next.basic.refresh_window_hours = Number.isFinite(next.basic.refresh_window_hours)
@@ -300,6 +397,37 @@ watch(settings, (value) => {
   next.basic.duckmail_api_key = typeof next.basic.duckmail_api_key === 'string'
     ? next.basic.duckmail_api_key
     : ''
+  next.basic.gptmail_api_key = typeof next.basic.gptmail_api_key === 'string'
+    ? next.basic.gptmail_api_key
+    : ''
+  next.basic.outbound_proxy = next.basic.outbound_proxy || {
+    enabled: false,
+    protocol: 'http',
+    host: '',
+    port: 0,
+    username: '',
+    password: '',
+    no_proxy: '',
+    direct_fallback: true,
+  }
+  next.basic.outbound_proxy.enabled = next.basic.outbound_proxy.enabled ?? false
+  next.basic.outbound_proxy.protocol = next.basic.outbound_proxy.protocol || 'http'
+  next.basic.outbound_proxy.host = typeof next.basic.outbound_proxy.host === 'string'
+    ? next.basic.outbound_proxy.host
+    : ''
+  next.basic.outbound_proxy.port = Number.isFinite(next.basic.outbound_proxy.port)
+    ? next.basic.outbound_proxy.port
+    : 0
+  next.basic.outbound_proxy.username = typeof next.basic.outbound_proxy.username === 'string'
+    ? next.basic.outbound_proxy.username
+    : ''
+  next.basic.outbound_proxy.password = typeof next.basic.outbound_proxy.password === 'string'
+    ? next.basic.outbound_proxy.password
+    : ''
+  next.basic.outbound_proxy.no_proxy = typeof next.basic.outbound_proxy.no_proxy === 'string'
+    ? next.basic.outbound_proxy.no_proxy
+    : ''
+  next.basic.outbound_proxy.direct_fallback = next.basic.outbound_proxy.direct_fallback ?? true
   next.retry = next.retry || {}
   next.retry.auto_refresh_accounts_seconds = Number.isFinite(next.retry.auto_refresh_accounts_seconds)
     ? next.retry.auto_refresh_accounts_seconds

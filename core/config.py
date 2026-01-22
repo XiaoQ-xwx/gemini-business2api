@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field, validator
 from dotenv import load_dotenv
 
 from core import storage
+from core.outbound_proxy import OutboundProxyConfig, normalize_proxy_url
 
 # 加载 .env 文件
 load_dotenv()
@@ -39,6 +40,29 @@ def _parse_bool(value, default: bool) -> bool:
     return default
 
 
+def _parse_int(value, default: int) -> int:
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return default
+        try:
+            return int(raw)
+        except ValueError:
+            return default
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
 # ==================== 配置模型定义 ====================
 
 class BasicConfig(BaseModel):
@@ -46,9 +70,13 @@ class BasicConfig(BaseModel):
     api_key: str = Field(default="", description="API访问密钥（留空则公开访问）")
     base_url: str = Field(default="", description="服务器URL（留空则自动检测）")
     proxy: str = Field(default="", description="代理地址")
+    outbound_proxy: OutboundProxyConfig = Field(default_factory=OutboundProxyConfig, description="出站代理（结构化配置）")
     duckmail_base_url: str = Field(default="https://api.duckmail.sbs", description="DuckMail API地址")
     duckmail_api_key: str = Field(default="", description="DuckMail API key")
     duckmail_verify_ssl: bool = Field(default=True, description="DuckMail SSL校验")
+    gptmail_base_url: str = Field(default="https://mail.chatgpt.org.uk", description="GPTMail API地址")
+    gptmail_api_key: str = Field(default="", description="GPTMail API key")
+    gptmail_verify_ssl: bool = Field(default=True, description="GPTMail SSL校验")
     browser_engine: str = Field(default="dp", description="浏览器引擎：uc 或 dp")
     browser_headless: bool = Field(default=False, description="自动化浏览器无头模式")
     refresh_window_hours: int = Field(default=1, ge=0, le=24, description="过期刷新窗口（小时）")
@@ -146,18 +174,37 @@ class ConfigManager:
         register_default_raw = basic_data.get("register_default_count", 1)
         register_domain_raw = basic_data.get("register_domain", "")
         duckmail_api_key_raw = basic_data.get("duckmail_api_key", "")
+        gptmail_api_key_raw = basic_data.get("gptmail_api_key", "")
+
+        outbound_data = basic_data.get("outbound_proxy", {})
+        if not isinstance(outbound_data, dict):
+            outbound_data = {}
+        outbound_proxy_config = OutboundProxyConfig(
+            enabled=_parse_bool(outbound_data.get("enabled"), False),
+            protocol=str(outbound_data.get("protocol") or "http").strip().lower(),
+            host=str(outbound_data.get("host") or "").strip(),
+            port=_parse_int(outbound_data.get("port"), 0),
+            username=str(outbound_data.get("username") or ""),
+            password_enc=str(outbound_data.get("password_enc") or ""),
+            no_proxy=str(outbound_data.get("no_proxy") or ""),
+            direct_fallback=_parse_bool(outbound_data.get("direct_fallback"), True),
+        )
 
         basic_config = BasicConfig(
             api_key=basic_data.get("api_key") or "",
             base_url=basic_data.get("base_url") or "",
-            proxy=basic_data.get("proxy") or "",
+            proxy=normalize_proxy_url(str(basic_data.get("proxy") or "")),
+            outbound_proxy=outbound_proxy_config,
             duckmail_base_url=basic_data.get("duckmail_base_url") or "https://api.duckmail.sbs",
             duckmail_api_key=str(duckmail_api_key_raw or "").strip(),
             duckmail_verify_ssl=_parse_bool(basic_data.get("duckmail_verify_ssl"), True),
+            gptmail_base_url=basic_data.get("gptmail_base_url") or "https://mail.chatgpt.org.uk",
+            gptmail_api_key=str(gptmail_api_key_raw or "").strip(),
+            gptmail_verify_ssl=_parse_bool(basic_data.get("gptmail_verify_ssl"), True),
             browser_engine=basic_data.get("browser_engine") or "dp",
             browser_headless=_parse_bool(basic_data.get("browser_headless"), False),
-            refresh_window_hours=int(refresh_window_raw),
-            register_default_count=int(register_default_raw),
+            refresh_window_hours=_parse_int(refresh_window_raw, 1),
+            register_default_count=_parse_int(register_default_raw, 1),
             register_domain=str(register_domain_raw or "").strip(),
         )
 

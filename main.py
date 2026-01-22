@@ -76,6 +76,11 @@ from core.config import config_manager, config
 
 # 数据库存储支持
 from core import storage
+from core.outbound_proxy import (
+    DEFAULT_GEMINI_PROXY_HOST_SUFFIXES,
+    ProxyAwareAsyncClient,
+    normalize_proxy_url,
+)
 
 # ---------- 日志配置 ----------
 
@@ -277,16 +282,41 @@ MODEL_MAPPING = {
 }
 
 # ---------- HTTP 客户端 ----------
-http_client = httpx.AsyncClient(
-    proxy=PROXY or None,
-    verify=False,
-    http2=False,
-    timeout=httpx.Timeout(TIMEOUT_SECONDS, connect=60.0),
-    limits=httpx.Limits(
-        max_keepalive_connections=100,  # 增加5倍：20 -> 100
-        max_connections=200              # 增加4倍：50 -> 200
-    )
-)
+def _build_http_client():
+    client_kwargs = {
+        "verify": False,
+        "http2": False,
+        "timeout": httpx.Timeout(TIMEOUT_SECONDS, connect=60.0),
+        "limits": httpx.Limits(
+            max_keepalive_connections=100,
+            max_connections=200,
+        ),
+        "trust_env": False,
+    }
+
+    outbound = config.basic.outbound_proxy
+    if getattr(outbound, "is_configured", None) and outbound.is_configured():
+        proxy_url = outbound.to_proxy_url(config.security.admin_key)
+        return ProxyAwareAsyncClient(
+            proxy_url=proxy_url or None,
+            no_proxy=outbound.no_proxy,
+            direct_fallback=outbound.direct_fallback,
+            proxied_host_suffixes=(),
+            client_kwargs=client_kwargs,
+        )
+
+    proxy_url = normalize_proxy_url(PROXY or "")
+    if proxy_url:
+        try:
+            return httpx.AsyncClient(proxy=proxy_url, **client_kwargs)
+        except httpx.InvalidURL:
+            logger.warning(f"[CONFIG] 全局代理格式无效，已忽略: {PROXY}")
+            return httpx.AsyncClient(proxy=None, **client_kwargs)
+
+    return httpx.AsyncClient(proxy=None, **client_kwargs)
+
+
+http_client = _build_http_client()
 
 # ---------- 工具函数 ----------
 def get_base_url(request: Request) -> str:
@@ -1002,10 +1032,15 @@ async def admin_update_config(request: Request, accounts_data: list = Body(...))
 
 @app.post("/admin/register/start")
 @require_login()
-async def admin_start_register(request: Request, count: Optional[int] = Body(default=None), domain: Optional[str] = Body(default=None)):
+async def admin_start_register(
+    request: Request,
+    count: Optional[int] = Body(default=None),
+    domain: Optional[str] = Body(default=None),
+    mail_provider: Optional[str] = Body(default=None),
+):
     if not register_service:
         raise HTTPException(503, "register service unavailable")
-    task = await register_service.start_register(count=count, domain=domain)
+    task = await register_service.start_register(count=count, domain=domain, mail_provider=mail_provider)
     return task.to_dict()
 
 @app.get("/admin/register/task/{task_id}")
@@ -1154,14 +1189,29 @@ async def admin_bulk_disable_accounts(request: Request, account_ids: list[str]):
 async def admin_get_settings(request: Request):
     """获取系统设置"""
     # 返回当前配置（转换为字典格式）
+    outbound = config.basic.outbound_proxy
+    outbound_password = outbound.decrypt_password(config.security.admin_key) if getattr(outbound, "decrypt_password", None) else ""
     return {
         "basic": {
             "api_key": config.basic.api_key,
             "base_url": config.basic.base_url,
             "proxy": config.basic.proxy,
+            "outbound_proxy": {
+                "enabled": outbound.enabled,
+                "protocol": outbound.protocol,
+                "host": outbound.host,
+                "port": outbound.port,
+                "username": outbound.username,
+                "password": outbound_password,
+                "no_proxy": outbound.no_proxy,
+                "direct_fallback": outbound.direct_fallback,
+            },
             "duckmail_base_url": config.basic.duckmail_base_url,
             "duckmail_api_key": config.basic.duckmail_api_key,
             "duckmail_verify_ssl": config.basic.duckmail_verify_ssl,
+            "gptmail_base_url": config.basic.gptmail_base_url,
+            "gptmail_api_key": config.basic.gptmail_api_key,
+            "gptmail_verify_ssl": config.basic.gptmail_verify_ssl,
             "browser_engine": config.basic.browser_engine,
             "browser_headless": config.basic.browser_headless,
             "refresh_window_hours": config.basic.refresh_window_hours,
@@ -1203,9 +1253,14 @@ async def admin_update_settings(request: Request, new_settings: dict = Body(...)
 
     try:
         basic = dict(new_settings.get("basic") or {})
+        if "proxy" in basic:
+            basic["proxy"] = normalize_proxy_url(str(basic.get("proxy") or ""))
         basic.setdefault("duckmail_base_url", config.basic.duckmail_base_url)
         basic.setdefault("duckmail_api_key", config.basic.duckmail_api_key)
         basic.setdefault("duckmail_verify_ssl", config.basic.duckmail_verify_ssl)
+        basic.setdefault("gptmail_base_url", config.basic.gptmail_base_url)
+        basic.setdefault("gptmail_api_key", config.basic.gptmail_api_key)
+        basic.setdefault("gptmail_verify_ssl", config.basic.gptmail_verify_ssl)
         basic.setdefault("browser_engine", config.basic.browser_engine)
         basic.setdefault("browser_headless", config.basic.browser_headless)
         basic.setdefault("refresh_window_hours", config.basic.refresh_window_hours)
@@ -1214,6 +1269,22 @@ async def admin_update_settings(request: Request, new_settings: dict = Body(...)
         if not isinstance(basic.get("register_domain"), str):
             basic["register_domain"] = ""
         basic.pop("duckmail_proxy", None)
+
+        outbound_defaults = config.basic.outbound_proxy.model_dump()
+        outbound_proxy = dict(basic.get("outbound_proxy") or {})
+        for k, v in outbound_defaults.items():
+            outbound_proxy.setdefault(k, v)
+
+        outbound_password = outbound_proxy.pop("password", None)
+        outbound_proxy.pop("password_enc", None)
+        if outbound_password is not None:
+            outbound_proxy["password_enc"] = config.basic.outbound_proxy.encrypt_password(
+                str(outbound_password or ""), config.security.admin_key
+            )
+        else:
+            outbound_proxy["password_enc"] = outbound_defaults.get("password_enc") or ""
+
+        basic["outbound_proxy"] = outbound_proxy
         new_settings["basic"] = basic
 
         image_generation = dict(new_settings.get("image_generation") or {})
@@ -1229,6 +1300,7 @@ async def admin_update_settings(request: Request, new_settings: dict = Body(...)
 
         # 保存旧配置用于对比
         old_proxy = PROXY
+        old_outbound_fingerprint = config.basic.outbound_proxy.fingerprint()
         old_retry_config = {
             "account_failure_threshold": ACCOUNT_FAILURE_THRESHOLD,
             "rate_limit_cooldown_seconds": RATE_LIMIT_COOLDOWN_SECONDS,
@@ -1259,21 +1331,16 @@ async def admin_update_settings(request: Request, new_settings: dict = Body(...)
         SESSION_EXPIRE_HOURS = config.session.expire_hours
 
         # 检查是否需要重建 HTTP 客户端（代理变化）
-        if old_proxy != PROXY:
-            logger.info(f"[CONFIG] 代理配置已变化，重建 HTTP 客户端")
-            await http_client.aclose()  # 关闭旧客户端
-            http_client = httpx.AsyncClient(
-                proxy=PROXY or None,
-                verify=False,
-                http2=False,
-                timeout=httpx.Timeout(TIMEOUT_SECONDS, connect=60.0),
-                limits=httpx.Limits(
-                    max_keepalive_connections=100,
-                    max_connections=200
-                )
-            )
-            # 更新所有账户的 http_client 引用
+        outbound_changed = old_outbound_fingerprint != config.basic.outbound_proxy.fingerprint()
+        if (old_proxy != PROXY) or outbound_changed:
+            logger.info("[CONFIG] 代理配置已变化，重建 HTTP 客户端")
+            await http_client.aclose()
+            http_client = _build_http_client()
             multi_account_mgr.update_http_client(http_client)
+            if register_service:
+                register_service.http_client = http_client
+            if login_service:
+                login_service.http_client = http_client
 
         # 检查是否需要更新账户管理器配置（重试策略变化）
         retry_changed = (
