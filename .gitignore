@@ -35,13 +35,11 @@ ENV/
 # Project specific
 .env
 *.log
-*.log.csv
 
 # Generated files
 data/
 logs/
 static/
-helloagents/
 
 # OS
 .DS_Store
